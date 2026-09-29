@@ -1,0 +1,10 @@
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary
+*.zip binary
+*.gz binary
+
+LICENSE text eol=lf
+NOTICE text eol=lf

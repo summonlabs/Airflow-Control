@@ -1,0 +1,19 @@
+#pragma once
+
+// Generated from version.hpp.in by CMake. Do not edit the generated copy.
+
+#include <cstdint>
+
+#define AIRFLOW_CONTROL_VERSION_MAJOR @PROJECT_VERSION_MAJOR@
+#define AIRFLOW_CONTROL_VERSION_MINOR @PROJECT_VERSION_MINOR@
+#define AIRFLOW_CONTROL_VERSION_PATCH @PROJECT_VERSION_PATCH@
+
+namespace airflow_control {
+
+/// Semantic version of this build, as a string literal.
+inline constexpr char kVersionString[] = "@PROJECT_VERSION@";
+
+/// The only durable store format version this build reads or writes.
+inline constexpr std::uint32_t kStoreFormatVersion = @AIRFLOW_CONTROL_STORE_FORMAT_VERSION@;
+
+}  // namespace airflow_control
