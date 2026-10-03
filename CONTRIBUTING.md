@@ -32,10 +32,6 @@ Do not disable a warning globally to make a change compile; fix the defect or, w
 a warning is genuinely wrong for a specific construct, suppress it narrowly at the
 site with a comment that explains why.
 
-Tests must not use timeouts. CTest timeouts, shell timeout wrappers, watchdog
-processes, and process-limit wrappers are prohibited. A test that hangs is a defect
-to diagnose, not to bound.
-
 ## Code quality requirements
 
 - Portable C++20. Standard library only; no third-party dependencies.
