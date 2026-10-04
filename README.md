@@ -1,7 +1,7 @@
 # Airflow Control
 
 Vendor-neutral airflow-oriented control semantics for rooms, rows, racks,
-containment, and pressure relationships, for the Data Center Control Plane.
+containment, and pressure relationships.
 
 **The core question.** Given current airflow and pressure evidence, containment
 state, thermal obligations, fan policy, authority, and generation, what
