@@ -741,3 +741,58 @@ AIRFLOW_TEST(canonical_state_carries_no_incarnation_generation_or_audit) {
     CHECK(lines > 10);
   }
 }
+
+AIRFLOW_TEST(a_mutation_that_cannot_be_published_leaves_no_trace) {
+  TempDir directory("persistence-unpublished");
+  const std::string path = directory.path() + "\\small.afcstore";
+  // The smallest slot a store may have: the model outgrows it after a few
+  // hundred registrations, and the registration that no longer fits is a valid
+  // request that cannot be published.
+  EngineOptions options = base_options();
+  options.store.slot_capacity_bytes = kMinSlotCapacityBytes;
+  Result<Scenario> scenario = make_scenario("1", 1);
+  REQUIRE(scenario.ok());
+  const Scenario s = scenario.value();
+
+  std::size_t committed_devices = 0;
+  bool refused = false;
+  {
+    Result<AirflowControlEngine> opened = AirflowControlEngine::open(path, OpenMode::create_new, options);
+    REQUIRE(opened.ok());
+    AirflowControlEngine& engine = opened.value();
+    REQUIRE(engine.adopt_epoch(s.epoch, s.actor, s.start_tick).ok());
+    REQUIRE(engine.advance_tick(s.ready_tick).ok());
+    for (int index = 0; index < 1000 && !refused; ++index) {
+      Result<AirflowDeviceId> device =
+          AirflowDeviceId::parse("dev-" + std::string(80, 'x') + "-" + std::to_string(index));
+      REQUIRE(device.ok());
+      const std::size_t before = engine.devices().size();
+      const Status status = engine.register_device(RegisterDeviceRequest{
+          .device = *device,
+          .generation = s.device_generation,
+          .room = s.room,
+          .row = s.row,
+          .actor = s.actor,
+          .requested_at = s.ready_tick,
+      });
+      if (status.ok()) {
+        continue;
+      }
+      refused = true;
+      committed_devices = before;
+      CHECK_EQ(status.code(), StatusCode::store_capacity_exceeded);
+      // The refused registration is not in the engine: it answers from the state
+      // it committed, not from the one it could not publish.
+      CHECK_EQ(engine.devices().size(), before);
+    }
+    CHECK(refused);
+    CHECK(committed_devices > 0);
+    // The engine closes cleanly. The closing publication used to carry the
+    // refused registration, and when it fitted it made the registration durable.
+    CHECK(engine.close().ok());
+  }
+  Result<AirflowControlEngine> reopened = AirflowControlEngine::open(path, OpenMode::open_existing, options);
+  REQUIRE(reopened.ok());
+  CHECK_EQ(reopened.value().devices().size(), committed_devices);
+  CHECK(reopened.value().close().ok());
+}

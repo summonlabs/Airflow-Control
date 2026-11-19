@@ -113,6 +113,32 @@ struct AirflowControlEngine::Impl {
     return store.publish(payload, incarnation);
   }
 
+  /// Publishes, and puts the working model back to the committed state when
+  /// the publication fails.
+  ///
+  /// For the mutations that end with their publication and keep no pointer
+  /// into the model afterwards. Nothing was committed, so the edit must not
+  /// stay in the working model: the caller is told the mutation failed, and an
+  /// engine that kept the edit would answer from uncommitted state and carry it
+  /// into every later publication. The store still holds the payload it last
+  /// committed. The command paths keep pointers into the model across their
+  /// publication and undo their own edits instead.
+  [[nodiscard]] Status publish_or_roll_back() {
+    Status published = publish();
+    if (!published.ok() && durable && store.is_open()) {
+      const std::vector<std::uint8_t>& committed = store.payload();
+      if (committed.empty()) {
+        model = detail::empty_model();
+      } else {
+        Result<detail::ModelState> decoded = detail::decode_model(committed.data(), committed.size());
+        if (decoded.ok()) {
+          model = std::move(decoded).value();
+        }
+      }
+    }
+    return published;
+  }
+
   [[nodiscard]] DeviceRecord* device_mut(const AirflowDeviceId& id) {
     return detail::find_device(model, id);
   }
@@ -1856,7 +1882,7 @@ Status AirflowControlEngine::Impl::adopt_epoch(AuthorityEpoch epoch, const Actor
   }
   model.epoch = epoch;
   audit(AuditKind::epoch_adopted, actor.str(), "epoch " + epoch.to_string() + " adopted");
-  return publish();
+  return publish_or_roll_back();
 }
 
 Status AirflowControlEngine::Impl::advance_tick(LogicalTick tick) {
@@ -1870,7 +1896,7 @@ Status AirflowControlEngine::Impl::advance_tick(LogicalTick tick) {
   }
   model.tick = tick;
   audit(AuditKind::clock_advanced, std::string(), "clock advanced to " + tick.to_string());
-  return publish();
+  return publish_or_roll_back();
 }
 
 Status AirflowControlEngine::Impl::register_device(const RegisterDeviceRequest& request) {
@@ -1898,7 +1924,7 @@ Status AirflowControlEngine::Impl::register_device(const RegisterDeviceRequest& 
                                                .row = request.row});
   audit(AuditKind::device_registered, request.device.str(),
         "generation " + request.generation.to_string());
-  return publish();
+  return publish_or_roll_back();
 }
 
 Status AirflowControlEngine::Impl::set_device_lifecycle(const SetLifecycleRequest& request) {
@@ -1948,7 +1974,7 @@ Status AirflowControlEngine::Impl::set_device_lifecycle(const SetLifecycleReques
   }
   audit(AuditKind::lifecycle_changed, request.device.str(),
         std::string(to_string(previous)) + " -> " + to_string(request.target));
-  return publish();
+  return publish_or_roll_back();
 }
 
 Status AirflowControlEngine::Impl::set_fan_policy(const SetFanPolicyRequest& request) {
@@ -2002,7 +2028,7 @@ Status AirflowControlEngine::Impl::set_fan_policy(const SetFanPolicyRequest& req
   audit(AuditKind::policy_set, request.device.str(),
         "policy " + request.policy.id.str() + " generation " +
             request.policy.generation.to_string());
-  return publish();
+  return publish_or_roll_back();
 }
 
 Status AirflowControlEngine::Impl::define_pressure_relationship(
@@ -2072,7 +2098,7 @@ Status AirflowControlEngine::Impl::define_pressure_relationship(
   }
   audit(AuditKind::relationship_defined, request.id.str(),
         std::string(to_string(request.polarity)) + " " + band.value().to_string());
-  return publish();
+  return publish_or_roll_back();
 }
 
 Status AirflowControlEngine::Impl::define_containment_element(
@@ -2111,7 +2137,7 @@ Status AirflowControlEngine::Impl::define_containment_element(
     }
   }
   audit(AuditKind::containment_defined, request.id.str(), to_string(request.kind));
-  return publish();
+  return publish_or_roll_back();
 }
 
 Status AirflowControlEngine::Impl::report_containment(const ReportContainmentRequest& request) {
@@ -2144,7 +2170,7 @@ Status AirflowControlEngine::Impl::report_containment(const ReportContainmentReq
   audit(AuditKind::containment_reported, request.element.str(),
         std::string("quality ") + to_string(request.quality) + ", state " +
             to_string(record->state));
-  return publish();
+  return publish_or_roll_back();
 }
 
 Status AirflowControlEngine::Impl::declare_obligation(const DeclareObligationRequest& request) {
@@ -2256,7 +2282,7 @@ Status AirflowControlEngine::Impl::declare_obligation(const DeclareObligationReq
     }
   }
   audit(AuditKind::obligation_declared, request.id.str(), request.minimum_airflow.to_string());
-  return publish();
+  return publish_or_roll_back();
 }
 
 Status AirflowControlEngine::Impl::declare_interlock(const DeclareInterlockRequest& request) {
@@ -2288,7 +2314,7 @@ Status AirflowControlEngine::Impl::declare_interlock(const DeclareInterlockReque
                                        request.declared_at,
                                        std::nullopt});
   audit(AuditKind::interlock_declared, request.id.str(), to_string(request.klass));
-  return publish();
+  return publish_or_roll_back();
 }
 
 Status AirflowControlEngine::Impl::report_interlock(const ReportInterlockRequest& request) {
@@ -2322,7 +2348,7 @@ Status AirflowControlEngine::Impl::report_interlock(const ReportInterlockRequest
   found->epoch = request.epoch;
   found->reported_at = request.reported_at;
   audit(AuditKind::interlock_reported, request.id.str(), to_string(request.state));
-  return publish();
+  return publish_or_roll_back();
 }
 
 Status AirflowControlEngine::Impl::add_grant(const PermissionGrant& grant, const ActorId& actor,
@@ -2358,7 +2384,7 @@ Status AirflowControlEngine::Impl::add_grant(const PermissionGrant& grant, const
   (void)at;
   model.grants.push_back(grant);
   audit(AuditKind::grant_added, grant.id.str(), grant.actions.to_string());
-  return publish();
+  return publish_or_roll_back();
 }
 
 Status AirflowControlEngine::Impl::revoke_grant(const GrantId& grant, AuthorityEpoch epoch,
@@ -2377,7 +2403,7 @@ Status AirflowControlEngine::Impl::revoke_grant(const GrantId& grant, AuthorityE
     existing.revoked = true;
     audit(AuditKind::grant_revoked, grant.str(), "revoked by " + actor.str());
     (void)at;
-    return publish();
+    return publish_or_roll_back();
   }
   return Status::failure(StatusCode::not_found, "grant " + grant.str() + " is not declared");
 }
@@ -2409,7 +2435,7 @@ Status AirflowControlEngine::Impl::add_maintenance_override(const MaintenanceOve
   (void)at;
   model.overrides.push_back(entry);
   audit(AuditKind::override_added, entry.id.str(), entry.reason);
-  return publish();
+  return publish_or_roll_back();
 }
 
 Status AirflowControlEngine::Impl::revoke_maintenance_override(const OverrideId& id,
@@ -2424,7 +2450,7 @@ Status AirflowControlEngine::Impl::revoke_maintenance_override(const OverrideId&
     entry.revoked = true;
     audit(AuditKind::override_revoked, id.str(), "revoked by " + actor.str());
     (void)at;
-    return publish();
+    return publish_or_roll_back();
   }
   return Status::failure(StatusCode::not_found, "override " + id.str() + " is not declared");
 }
@@ -2457,7 +2483,7 @@ Status AirflowControlEngine::Impl::add_safety_permit(const SafetyPermit& permit,
   (void)at;
   model.permits.push_back(permit);
   audit(AuditKind::safety_permit_added, permit.id.str(), permit.reason);
-  return publish();
+  return publish_or_roll_back();
 }
 
 Status AirflowControlEngine::Impl::resolve_attempt(const ResolveAttemptRequest& request) {
@@ -3106,7 +3132,7 @@ Status AirflowControlEngine::Impl::recover() {
         "adopted " + std::to_string(adopted) +
             " attempt(s) at the command-attempt boundary without re-sending them");
   audit(AuditKind::engine_opened, std::string(), "incarnation " + incarnation.to_string());
-  return publish();
+  return publish_or_roll_back();
 }
 
 namespace {
